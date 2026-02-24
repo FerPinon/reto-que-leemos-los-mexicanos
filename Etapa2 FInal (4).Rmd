@@ -1,0 +1,241 @@
+---
+title: "Exploración de hábitos de lectura (2019–2024)"
+author: "Eugenio"
+output:
+  pdf_document:
+    toc: true
+    toc_depth: '2'
+    latex_engine: xelatex
+  word_document:
+    toc: true
+    toc_depth: '2'
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+library(tidyverse)
+library(psych)
+library(moments)
+library(kableExtra)
+```
+
+## 1. Carga y unión de bases de datos
+
+```{r}
+archivos <- list.files(pattern = "(?i)Datos_molec_.*\\.csv$")
+
+datos <- map_df(archivos, ~read.csv(.x, encoding = "UTF-8") %>%
+  mutate(anio = as.numeric(stringr::str_extract(.x, "\\d{4}"))))
+
+glimpse(datos)
+```
+
+## 2. Recodificación de variables
+
+```{r}
+datos <- datos %>%
+  mutate(
+    p2 = factor(p2, levels = c(1, 2), labels = c("Sí", "No")),
+    p8_1 = factor(p8_1, levels = c(1, 2), labels = c("Sí", "No")),
+    p8_2 = factor(p8_2, levels = c(1, 2), labels = c("Sí", "No")),
+    p24 = factor(p24, levels = 1:5,
+                 labels = c("Diariamente", "1 vez/semana", "1 vez/mes", "1 vez/trimestre", "Ocasionalmente")),
+    nivel = factor(nivel,
+                   levels = c(0,1,2,3,4,5,6,7,8,9,99),
+                   labels = c("Ninguno", "Preescolar", "Primaria", "Secundaria", "Preparatoria", "Normal básica",
+                              "Carrera técnica", "Profesional", "Maestría", "Doctorado", "No sabe")),
+    edad_grupo = cut(edad, breaks = c(0,14,24,34,44,54,64,Inf),
+                     labels = c("≤14", "15–24", "25–34", "35–44", "45–54", "55–64", "65+"))
+  )
+```
+
+## 3. Variables cuantitativas
+
+### 3.1. Libros leídos en 12 meses (p4)
+
+```{r}
+stats_p4 <- datos %>%
+  group_by(anio) %>%
+  summarise(
+    Media = mean(p4, na.rm = TRUE),
+    Mediana = median(p4, na.rm = TRUE),
+    RangoMedio = (max(p4, na.rm = TRUE) + min(p4, na.rm = TRUE))/2,
+    DesvEst = sd(p4, na.rm = TRUE),
+    CoefVar = 100*sd(p4, na.rm = TRUE)/mean(p4, na.rm = TRUE),
+    Q1 = quantile(p4, 0.25, na.rm = TRUE),
+    Q3 = quantile(p4, 0.75, na.rm = TRUE),
+    Sesgo = moments::skewness(p4, na.rm = TRUE),
+    Curtosis = moments::kurtosis(p4, na.rm = TRUE)
+  )
+kable(stats_p4, digits=2) %>% kable_styling(full_width = FALSE)
+```
+
+#### Boxplot por nivel educativo
+
+```{r}
+# Obtener los niveles únicos y dividir en dos mitades
+niveles_unicos <- levels(datos$nivel)
+mitad <- ceiling(length(niveles_unicos) / 2)
+
+niveles_parte1 <- niveles_unicos[1:mitad]
+niveles_parte2 <- niveles_unicos[(mitad + 1):length(niveles_unicos)]
+
+# --- Gráfico 1: primera mitad de niveles ---
+ggplot(filter(datos, nivel %in% niveles_parte1),
+       aes(x = nivel, y = p4, fill = as.factor(anio))) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.6) +
+  labs(title = "Libros leídos por nivel educativo (Parte 1)",
+       x = "Nivel educativo", y = "Libros leídos", fill = "Año") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# --- Gráfico 2: segunda mitad de niveles ---
+ggplot(filter(datos, nivel %in% niveles_parte2),
+       aes(x = nivel, y = p4, fill = as.factor(anio))) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.6) +
+  labs(title = "Libros leídos por nivel educativo (Parte 2)",
+       x = "Nivel educativo", y = "Libros leídos", fill = "Año") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+#### Boxplot por grupo de edad
+
+```{r}
+ggplot(datos, aes(x = edad_grupo, y = p4, fill = as.factor(anio))) +
+  geom_boxplot(outlier.shape = NA, outlier.color = "red", alpha = 0.6) +
+  labs(title = "Libros leídos por grupo de edad (p4)", x = "Grupo de edad", y = "Libros leídos", fill = "Año") +
+  theme_minimal()
+```
+
+### 3.2. Minutos continuos de lectura (p26)
+
+```{r}
+stats_p26 <- datos %>%
+  group_by(anio) %>%
+  summarise(
+    Media = mean(p26, na.rm = TRUE),
+    Mediana = median(p26, na.rm = TRUE),
+    RangoMedio = (max(p26, na.rm = TRUE) + min(p26, na.rm = TRUE))/2,
+    DesvEst = sd(p26, na.rm = TRUE),
+    CoefVar = 100*sd(p26, na.rm = TRUE)/mean(p26, na.rm = TRUE),
+    Q1 = quantile(p26, 0.25, na.rm = TRUE),
+    Q3 = quantile(p26, 0.75, na.rm = TRUE),
+    Sesgo = moments::skewness(p26, na.rm = TRUE),
+    Curtosis = moments::kurtosis(p26, na.rm = TRUE)
+  )
+kable(stats_p26, digits=2) %>% kable_styling(full_width = FALSE)
+```
+
+#### Boxplots
+
+```{r}
+# Obtener los niveles únicos y dividir en dos mitades
+niveles_unicos <- levels(datos$nivel)
+mitad <- ceiling(length(niveles_unicos) / 2)
+
+niveles_parte1 <- niveles_unicos[1:mitad]
+niveles_parte2 <- niveles_unicos[(mitad + 1):length(niveles_unicos)]
+
+# --- Gráfico 1: primera mitad de niveles ---
+ggplot(filter(datos, nivel %in% niveles_parte1),
+       aes(x = nivel, y = p26, fill = as.factor(anio))) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.6) +
+  labs(title = "Minutos de lectura por nivel educativo (Parte 1)",
+       x = "Nivel educativo", y = "Minutos", fill = "Año") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# --- Gráfico 2: segunda mitad de niveles ---
+ggplot(filter(datos, nivel %in% niveles_parte2),
+       aes(x = nivel, y = p26, fill = as.factor(anio))) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.6) +
+  labs(title = "Minutos de lectura por nivel educativo (Parte 2)",
+       x = "Nivel educativo", y = "Minutos", fill = "Año") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+ggplot(datos, aes(x = edad_grupo, y = p26, fill = as.factor(anio))) +
+  geom_boxplot(outlier.shape = NA, outlier.color = "red", alpha = 0.6) +
+  labs(title = "Minutos de lectura por grupo de edad (p26)", x = "Grupo de edad", y = "Minutos", fill = "Año") +
+  theme_minimal()
+```
+
+## 4. Variables categóricas
+
+### 4.1. Acostumbra leer (p2)
+
+```{r}
+datos %>%
+  count(anio, nivel, p2) %>% group_by(anio, nivel) %>%
+  mutate(prop = n / sum(n)) %>%
+  ggplot(aes(x = nivel, y = prop, fill = p2)) +
+  geom_col(position = "dodge") + facet_wrap(~anio) +
+  labs(title = "Acostumbra leer (p2) por nivel educativo",
+       y = "Proporción", x = "Nivel educativo", fill = "Respuesta") +
+  theme_minimal() + theme(axis.text.x = element_text(angle = 270, hjust = 0))
+
+datos %>%
+  count(anio, edad_grupo, p2) %>% group_by(anio, edad_grupo) %>%
+  mutate(prop = n / sum(n)) %>%
+  ggplot(aes(x = edad_grupo, y = prop, fill = p2)) +
+  geom_col(position = "dodge") + facet_wrap(~anio) +
+  labs(title = "Acostumbra leer (p2) por grupo de edad",
+       y = "Proporción", x = "Grupo de edad", fill = "Respuesta") +
+  theme_minimal()+
+    theme(
+    axis.text.x = element_text(angle = 270, hjust = 0.5, vjust = 0.5)
+  )
+
+```
+
+### 4.2. Lectura digital (p8_1)
+
+```{r}
+datos %>% count(anio, nivel, p8_1) %>% group_by(anio, nivel) %>%
+  mutate(prop = n/sum(n)) %>%
+  ggplot(aes(x=nivel, y=prop, fill=p8_1)) +
+  geom_col(position="dodge") + facet_wrap(~anio) +
+  labs(title="Lee libros digitales (p8_1)", x="Nivel educativo", y="Proporción", fill="Respuesta") +
+  theme_minimal() + theme(axis.text.x=element_text(angle=270,hjust=0))
+```
+
+### 4.3. Lectura impresa (p8_2)
+
+```{r}
+datos %>% count(anio, nivel, p8_2) %>% group_by(anio, nivel) %>%
+  mutate(prop = n/sum(n)) %>%
+  ggplot(aes(x=nivel, y=prop, fill=p8_2)) +
+  geom_col(position="dodge") + facet_wrap(~anio) +
+  labs(title="Lee libros impresos (p8_2)", x="Nivel educativo", y="Proporción", fill="Respuesta") +
+  theme_minimal() + theme(axis.text.x=element_text(angle=270,hjust=0))
+```
+
+### 4.4. Frecuencia lectura web/blogs (p24)
+
+```{r}
+datos %>% count(anio, nivel, p24) %>% group_by(anio, nivel) %>%
+  mutate(prop = n/sum(n)) %>%
+  ggplot(aes(x=nivel, y=prop, fill=p24)) +
+  geom_col(position="stack") + facet_wrap(~anio) +
+  labs(title="Frecuencia de lectura en sitios web/blogs (p24)",
+       x="Nivel educativo", y="Proporción", fill="Frecuencia") +
+  theme_minimal() + theme(axis.text.x=element_text(angle=270,hjust=0))
+```
+
+### 4.5. Correlación entre p4 y p26
+
+```{r}
+ggplot(datos, aes(x = p4, y = p26, color = as.factor(anio))) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "lm", se = FALSE, color = "black") +
+  labs(title = "Relación entre libros leídos y minutos de lectura",
+       x = "Libros leídos (p4)", y = "Minutos de lectura (p26)", color = "Año") +
+  theme_minimal()
+```

@@ -1,0 +1,254 @@
+---
+title: "Etapa 3 — ANOVA p26 por año"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: false
+---
+
+```{r setup, message=FALSE, warning=FALSE}
+req <- c("dplyr","ggplot2","car","rstatix","forcats","stringr","purrr","tidyr")
+loaded <- sapply(req, require, character.only = TRUE)
+if (!all(loaded)) {
+  missing <- req[!loaded]
+  stop(paste("Faltan paquetes:", paste(missing, collapse=", "),
+             "\nInstálalos e intenta de nuevo."))
+}
+alpha <- 0.04
+if ("conflicted" %in% rownames(installed.packages())) {
+  library(conflicted)
+  conflict_prefer("filter", "dplyr", quiet = TRUE)
+  conflict_prefer("select", "dplyr", quiet = TRUE)
+}
+```
+
+```{r detectar-datos, message=FALSE}
+# Intento 1: usar dfs/anios si ya existen
+if (exists("dfs") && exists("anios")) {
+  message("Usando dfs/anios existentes del ambiente.")
+} else {
+  # Intento 2: construir dfs/anios a partir de objetos M19..M24
+  objs <- ls()
+  pat  <- "^M(19|20|21|22|23|24)$"
+  mns  <- objs[grepl(pat, objs)]
+  if (length(mns) > 0) {
+    anios <- sort(as.integer(gsub("^M", "", mns)))
+    dfs <- lapply(paste0("M", anios), function(nm) get(nm, inherits = TRUE))
+    message("Construí dfs/anios a partir de M19..M24.")
+  } else {
+    # Intento 3: partir un solo data frame con columna de año
+    candidatos <- objs[sapply(objs, function(z) is.data.frame(get(z)))]
+    if (length(candidatos) == 0) stop("No hay data frames en el entorno. Carga tus datos primero.")
+    sizes <- sapply(candidatos, function(z) nrow(get(z)))
+    base_nm <- candidatos[which.max(sizes)]
+    base_df <- get(base_nm)
+    names(base_df) <- tolower(names(base_df))
+    posibles_year <- c("year","anio","año","ano","anio_encuesta","year_encuesta")
+    col_year <- posibles_year[posibles_year %in% names(base_df)]
+    if (length(col_year) == 0) stop("No encontré columna de año (year/anio/año) en el data frame base.")
+    col_year <- col_year[0+1]
+    base_df$__year__ <- as.integer(base_df[[col_year]])
+    keep <- base_df$__year__ %in% 2019:2024
+    if (!any(keep)) stop("No hay registros con años 2019..2024 en el data frame base.")
+    base_df <- base_df[keep, ]
+    anios <- sort(unique(base_df$__year__))
+    dfs <- lapply(anios, function(y) subset(base_df, __year__ == y, select = -__year__))
+    names(dfs) <- paste0("M", anios)
+    message(sprintf("Construí dfs/anios a partir del data frame '%s' y columna '%s'.", base_nm, col_year))
+  }
+}
+
+dat_all <- dplyr::bind_rows(lapply(seq_along(dfs), function(i){
+  df_i <- dfs[[i]]
+  p2  <- suppressWarnings(as.numeric(df_i$p2))
+  p26 <- suppressWarnings(as.numeric(df_i$p26))
+  dplyr::tibble(
+    year = factor(anios[i]),
+    p2   = p2,
+    p26  = p26
+  )
+}))
+dplyr::glimpse(dat_all)
+```
+
+```{r poblacion-proporcion-lectores, message=FALSE}
+cat("\n=== 1) POBLACIÓN: Proporción de lectores (p2=1) por año ===\n")
+tab_p2 <- table(dat_all$year, dat_all$p2)
+print(tab_p2)
+
+chisq_try <- suppressWarnings(chisq.test(tab_p2))
+if (all(chisq_try$expected >= 5)) {
+  chi_res <- chisq.test(tab_p2, correct = FALSE)
+  print(chi_res)
+  cat(sprintf("Decisión (α=%.2f): %s\n", alpha,
+              ifelse(chi_res$p.value < alpha, "Rechazo H0 (proporciones difieren por año)",
+                     "No rechazo H0")))
+} else {
+  fish_res <- fisher.test(tab_p2)
+  print(fish_res)
+  cat(sprintf("Decisión (α=%.2f): %s\n", alpha,
+              ifelse(fish_res$p.value < alpha, "Rechazo H0 (proporciones difieren por año)",
+                     "No rechazo H0")))
+}
+
+prop_df <- dat_all |>
+  dplyr::group_by(year) |>
+  dplyr::summarise(
+    n  = dplyr::n(),
+    x  = sum(p2 == 1, na.rm = TRUE),
+    p  = x/n,
+    se = sqrt(p*(1-p)/n),
+    lo = p - qnorm(1 - alpha/2)*se,
+    hi = p + qnorm(1 - alpha/2)*se,
+    .groups = "drop"
+  )
+
+ggplot(prop_df, aes(x = year, y = p)) +
+  geom_col() +
+  geom_errorbar(aes(ymin = pmax(0, lo), ymax = pmin(1, hi)), width = 0.2) +
+  scale_y_continuous(labels = scales::percent_format()) +
+  labs(title = "Proporción que acostumbra leer (p2=1) por año",
+       x = "Año", y = "Proporción (IC 96%)")
+```
+
+```{r lectores-anova, message=FALSE, warning=FALSE}
+cat("\n=== 2) LECTORES: p26 por año (solo p2=1) ===\n")
+dat_read <- dat_all |>
+  dplyr::filter(p2 == 1, !is.na(p26), p26 >= 0) |>
+  dplyr::mutate(lp26 = log1p(p26))
+
+ggplot(dat_read, aes(x = year, y = p26)) +
+  geom_boxplot(outlier.alpha = 0.25) +
+  labs(title = "Lectura profunda (p26) por año — solo lectores",
+       x = "Año", y = "Minutos continuos (p26)")
+
+fit_aov <- aov(lp26 ~ year, data = dat_read)
+res_aov <- residuals(fit_aov)
+n_res <- length(res_aov)
+if (n_res >= 3 && n_res <= 5000) {
+  print(shapiro.test(res_aov))
+} else {
+  cat(sprintf("Shapiro omitido (n=%d). Intentando Lilliefors...\n", n_res))
+  if (requireNamespace("nortest", quietly = TRUE) && n_res >= 5) {
+    print(nortest::lillie.test(res_aov))
+  } else {
+    cat("Sin Lilliefors; revisar QQ-plot y usar Welch/Kruskal si es necesario.\n")
+  }
+}
+print(car::leveneTest(lp26 ~ year, data = dat_read, center=median))
+
+cat("\n-- Resultado ANOVA clásico --\n")
+print(summary(fit_aov))
+
+cat("\n-- Post-hoc Tukey (ANOVA clásico) --\n")
+print(TukeyHSD(fit_aov))
+
+cat("\n-- Welch-ANOVA (robusto) --\n")
+welch <- oneway.test(lp26 ~ year, data = dat_read, var.equal = FALSE)
+print(welch)
+
+cat("\n-- Games-Howell (post-hoc Welch) --\n")
+gh <- rstatix::games_howell_test(dat_read, lp26 ~ year)
+print(dplyr::arrange(gh, p.adj))
+
+cat("\n-- Kruskal-Wallis (no paramétrica) --\n")
+kw <- kruskal.test(p26 ~ year, data = dat_read)
+print(kw)
+
+if (kw$p.value < alpha) {
+  cat("\n-- Dunn (BH) --\n")
+  dunn_res <- rstatix::dunn_test(dat_read, p26 ~ year, p.adjust.method = "BH")
+  print(dplyr::arrange(dunn_res, p.adj))
+}
+```
+
+```{r reporte-hipotesis-y-decision, message=FALSE}
+alpha <- 0.04
+aov_sum <- summary(fit_aov)[[1]]
+df1_aov <- as.numeric(aov_sum[1, "Df"])
+df2_aov <- as.numeric(aov_sum[2, "Df"])
+F_aov    <- as.numeric(aov_sum[1, "F value"])
+p_aov    <- as.numeric(aov_sum[1, "Pr(>F)"])
+Fcrit_aov <- qf(1 - alpha, df1_aov, df2_aov)
+
+F_welch   <- as.numeric(welch$statistic)
+df1_w     <- as.numeric(welch$parameter[1])
+df2_w     <- as.numeric(welch$parameter[2])
+p_welch   <- as.numeric(welch$p.value)
+Fcrit_w   <- qf(1 - alpha, df1_w, df2_w)
+
+KW_stat   <- as.numeric(kw$statistic)
+KW_df     <- as.numeric(kw$parameter)
+KW_p      <- as.numeric(kw$p.value)
+KW_crit   <- qchisq(1 - alpha, df = KW_df)
+
+res_tab <- data.frame(
+  Prueba        = c("ANOVA (clásico, log1p(p26))", "Welch-ANOVA (robusto)", "Kruskal-Wallis (no paramétrica)"),
+  Estadistico   = c(sprintf("F = %.3f", F_aov), sprintf("F = %.3f", F_welch), sprintf("Chi^2 = %.3f", KW_stat)),
+  Gl            = c(sprintf("(%d, %d)", df1_aov, df2_aov), sprintf("(%.1f, %.1f)", df1_w, df2_w), sprintf("(%d)", KW_df)),
+  Valor_critico = c(sprintf("F_crit(α=%.2f)=%.3f", alpha, Fcrit_aov),
+                    sprintf("F_crit(α=%.2f)=%.3f", alpha, Fcrit_w),
+                    sprintf("Chi^2_crit(α=%.2f)=%.3f", alpha, KW_crit)),
+  p_value       = c(sprintf("%.4f", p_aov), sprintf("%.4f", p_welch), sprintf("%.4f", KW_p)),
+  Decision      = c(ifelse(p_aov   < alpha, "Rechazo H0", "No rechazo H0"),
+                    ifelse(p_welch < alpha, "Rechazo H0", "No rechazo H0"),
+                    ifelse(KW_p    < alpha, "Rechazo H0", "No rechazo H0"))
+)
+knitr::kable(res_tab, align = "c", caption = "Resumen de pruebas globales y decisiones (α = 0.04)")
+```
+
+## Requisitos del curso — trazabilidad metodológica
+
+```{r justificacion-metodo, echo=FALSE, message=FALSE}
+metodo <- data.frame(
+  Punto = c(
+    "Justificación del método",
+    "Distribución muestral",
+    "Supuestos verificados",
+    "Hipótesis H0 y H1",
+    "Valor crítico y regla de decisión",
+    "Resultados y visualizaciones"
+  ),
+  Contenido = c(
+    "Comparamos medias de p26 entre varios años (k grupos); ANOVA es el contraste global canónico. Si hay varianzas desiguales, usamos Welch; si hay asimetría fuerte, Kruskal.",
+    "ANOVA: F ~ F_{k-1, N-k}; Welch: F con gl aproximados (df1, df2); Kruskal: H ~ Chi^2_{k-1}.",
+    "Normalidad residual (Shapiro/Lilliefors según n), homogeneidad (Levene), independencia por diseño.",
+    "H0: todas las medias iguales; H1: al menos una media difiere.",
+    "Con α=0.04, rechazamos H0 si p<α o si el estadístico excede el valor crítico de su distribución bajo H0.",
+    "Se incluyen tablas (kable) y gráficas (boxplots y barras con IC)."
+  ),
+  check.names = FALSE
+)
+knitr::kable(metodo, align = "l", caption = "Documento de cumplimiento metodológico (ANOVA por año)")
+```
+
+```{r distribuciones-y-criticos, echo=FALSE, message=FALSE}
+k <- length(levels(dat_read$year)); N <- nrow(dat_read)
+aov_sum2 <- summary(fit_aov)[[1]]
+df1_aov2 <- as.numeric(aov_sum2[1, "Df"]); df2_aov2 <- as.numeric(aov_sum2[2, "Df"])
+Fcrit_aov2 <- qf(1 - alpha, df1_aov2, df2_aov2)
+df1_w2 <- as.numeric(welch$parameter[1]); df2_w2 <- as.numeric(welch$parameter[2])
+Fcrit_w2 <- qf(1 - alpha, df1_w2, df2_w2)
+KW_df2 <- as.numeric(kw$parameter); KW_crit2 <- qchisq(1 - alpha, df = KW_df2)
+
+dist_tab <- data.frame(
+  Prueba = c("ANOVA (clásico)","Welch-ANOVA","Kruskal-Wallis"),
+  Distribución_bajo_H0 = c(sprintf("F(%d, %d)", df1_aov2, df2_aov2),
+                           sprintf("F(%.1f, %.1f) aprox", df1_w2, df2_w2),
+                           sprintf("Chi^2(%d)", KW_df2)),
+  Valor_crítico_α_0_04 = c(sprintf("%.3f", Fcrit_aov2), sprintf("%.3f", Fcrit_w2), sprintf("%.3f", KW_crit2)),
+  check.names = FALSE
+)
+knitr::kable(dist_tab, align = "c", caption = "Distribución muestral y valores críticos usados (α = 0.04)")
+```
+
+```{r supuestos-verificados, echo=FALSE, message=FALSE}
+sup_tab <- data.frame(
+  Supuesto = c("Normalidad de residuos","Homogeneidad de varianzas (Levene)"),
+  Evidencia = c("Shapiro-Wilk si 3≤n≤5000; de lo contrario Lilliefors/QQ-plot",
+                "Test de Levene (mediana)"),
+  Decisión = c("Si no se cumple, usar Welch/Kruskal","Si no se cumple, reportar Welch")
+)
+knitr::kable(sup_tab, align = "l", caption = "Verificación y manejo de supuestos")
+```

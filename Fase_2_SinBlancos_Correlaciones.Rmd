@@ -1,0 +1,299 @@
+---
+title: "Fase 2 — Descriptivos sin 'blancos' + Correlaciones"
+author: "Héctor Fernando Piñón Soto"
+date: "2025-10-10"
+output:
+  word_document: default
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+# ===== Paquetes =====
+packs <- c("dplyr","tidyr","ggplot2","e1071","knitr","tibble","scales")
+to_install <- setdiff(packs, rownames(installed.packages()))
+if(length(to_install)) install.packages(to_install, quiet = TRUE)
+invisible(lapply(packs, library, character.only = TRUE))
+
+# ===== Lectura de datos =====
+M19 <- read.csv("Datos_molec_2019-1.csv")
+M20 <- read.csv("Datos_molec_2020-1.csv")
+M21 <- read.csv("Datos_molec_2021-1.CSV")
+M22 <- read.csv("Datos_molec_2022-1.CSV")
+M23 <- read.csv("Datos_molec_2023-1.CSV")
+M24 <- read.csv("Datos_molec_2024-1.csv")
+
+# Normaliza tipos a numérico
+to_numeric <- function(df){
+  for(v in c("p4","p26","p24","p2","p8_1","p8_2","sexo","nivel","edad")){
+    if(v %in% names(df)) df[[v]] <- suppressWarnings(as.numeric(df[[v]]))
+  }
+  df
+}
+M19 <- to_numeric(M19); M20 <- to_numeric(M20); M21 <- to_numeric(M21)
+M22 <- to_numeric(M22); M23 <- to_numeric(M23); M24 <- to_numeric(M24)
+
+dfs   <- list(M19,M20,M21,M22,M23,M24)
+anios <- 2019:2024
+
+# ===== Helpers =====
+
+# --- 1) Resumen numérico tipo describe por año ---
+num_describe <- function(dfs, var, anios) {
+  one <- function(df, var){
+    x <- df[[var]]
+    c(
+      Min      = suppressWarnings(min(x, na.rm=TRUE)),
+      Q1       = as.numeric(quantile(x, .25, na.rm=TRUE)),
+      Mediana  = suppressWarnings(median(x, na.rm=TRUE)),
+      Media    = suppressWarnings(mean(x, na.rm=TRUE)),
+      Q3       = as.numeric(quantile(x, .75, na.rm=TRUE)),
+      Máximo   = suppressWarnings(max(x, na.rm=TRUE)),
+      `Rango Medio` = (suppressWarnings(max(x, na.rm=TRUE))-suppressWarnings(min(x, na.rm=TRUE)))/2,
+      `Desv Est`    = suppressWarnings(sd(x, na.rm=TRUE)),
+      CV            = suppressWarnings(mean(x, na.rm=TRUE)/sd(x, na.rm=TRUE)),
+      Sesgo         = suppressWarnings(e1071::skewness(x, na.rm=TRUE)),
+      Curtosis      = suppressWarnings(e1071::kurtosis(x, na.rm=TRUE))
+    )
+  }
+  M <- sapply(dfs, one, var = var)
+  colnames(M) <- anios
+  round(M, 2)
+}
+
+# --- 2) Proporciones por año con niveles fijos (sin 'blanco'=0) ---
+prop_mat_anios <- function(dfs, var, levels, labels, anios) {
+  stopifnot(length(levels) == length(labels))
+  vec <- function(x, levels) {
+    # Excluye valores fuera de levels
+    x[!(x %in% levels)] <- NA
+    v <- factor(x, levels = levels)
+    as.numeric(prop.table(table(v)))
+  }
+  mats <- lapply(dfs, function(df) vec(df[[var]], levels))
+  M <- do.call(rbind, mats)
+  colnames(M) <- labels
+  rownames(M) <- anios
+  M
+}
+
+# --- 3) Mediana por año (para ordinales, excluye 'blanco'=0) ---
+ordinal_median_by_year <- function(dfs, var, anios, valid_levels) {
+  m <- sapply(dfs, function(df) {
+    x <- suppressWarnings(as.numeric(df[[var]]))
+    x <- x[x %in% valid_levels]
+    if(length(x)) median(x) else NA
+  })
+  names(m) <- anios
+  m
+}
+
+# --- 4) Gráficos cuantitativos ---
+box_by_year <- function(dfs, var, anios, ylab="", ylim=NULL){
+  dfp <- dplyr::bind_rows(lapply(seq_along(dfs), function(i){
+    tibble::tibble(anio = anios[i], valor = dfs[[i]][[var]])
+  }))
+  ggplot(dfp, aes(x=factor(anio), y=valor)) +
+    geom_boxplot() +
+    labs(x="Año", y=ylab, title=paste0("Boxplots por año: ", var)) +
+    (if(is.null(ylim)) NULL else coord_cartesian(ylim=ylim))
+}
+
+hist_grid_by_year <- function(dfs, var, anios, bins=30, density=FALSE){
+  dfp <- dplyr::bind_rows(lapply(seq_along(dfs), function(i){
+    tibble::tibble(anio = factor(anios[i]), valor = dfs[[i]][[var]])
+  })) |> dplyr::filter(!is.na(valor))
+  p <- ggplot(dfp, aes(x=valor)) +
+    geom_histogram(bins=bins) +
+    facet_wrap(~anio, scales="free_y") +
+    labs(x=var, y="Frecuencia", title=paste0("Histogramas: ", var))
+  if (density) {
+    p <- ggplot(dfp, aes(x=valor)) +
+      geom_histogram(aes(y=after_stat(density)), bins=bins, alpha=.4) +
+      geom_density(linewidth=1) +
+      facet_wrap(~anio, scales="free") +
+      labs(x=var, y="Densidad", title=paste0("Histograma + densidad: ", var))
+  }
+  p
+}
+
+# --- 5) Líneas de proporción por año (sin asumir 'Total') ---
+line_prop_by_cat <- function(M_prop, cats_to_plot=NULL){
+  dfp <- data.frame(anio = as.integer(rownames(M_prop)), as.data.frame(M_prop))
+  dfp <- tidyr::pivot_longer(dfp, -anio, names_to = "categoria", values_to = "prop")
+  if(!is.null(cats_to_plot)) dfp <- dplyr::filter(dfp, categoria %in% cats_to_plot)
+  ggplot(dfp, aes(x=anio, y=prop, color=categoria)) +
+    geom_line() + geom_point() +
+    scale_x_continuous(breaks=unique(dfp$anio)) +
+    labs(x="Año", y="Proporción", color="Categoría", title="Proporciones por año (sin 'blancos')") +
+    theme(legend.position="bottom")
+}
+
+# --- 6) Barras de frecuencias (sin 'blancos') ---
+freq_long_by_year <- function(dfs, var, levels, labels, anios) {
+  stopifnot(length(dfs) == length(anios), length(levels) == length(labels))
+  dplyr::bind_rows(lapply(seq_along(dfs), function(i){
+    x <- dfs[[i]][[var]]
+    x[!(x %in% levels)] <- NA
+    v <- factor(x, levels = levels, labels = labels)
+    tab <- table(v)
+    tibble::tibble(
+      anio = anios[i],
+      categoria = names(tab),
+      n = as.numeric(tab)
+    )
+  })) |>
+    dplyr::group_by(anio) |>
+    dplyr::mutate(prop = n / sum(n)) |>
+    dplyr::ungroup()
+}
+
+plot_barras_agrupadas <- function(freq_long, usar_prop = TRUE, titulo = NULL, ylabel = NULL) {
+  yvar <- if (usar_prop) "prop" else "n"
+  if (is.null(titulo)) titulo <- "Frecuencias por año"
+  if (is.null(ylabel)) ylabel <- if (usar_prop) "Proporción" else "Conteo"
+  ggplot(freq_long, aes(x = factor(anio), y = .data[[yvar]], fill = categoria)) +
+    geom_col(position = position_dodge(width = 0.8)) +
+    scale_y_continuous(labels = if (usar_prop) scales::percent else waiver()) +
+    labs(x = "Año", y = ylabel, fill = "Categoría", title = titulo) +
+    theme(legend.position = "bottom")
+}
+
+plot_barras_100 <- function(freq_long, titulo = NULL) {
+  if (is.null(titulo)) titulo <- "Distribución 100% apilada por año"
+  ggplot(freq_long, aes(x = factor(anio), y = prop, fill = categoria)) +
+    geom_col(position = "fill") +
+    scale_y_continuous(labels = scales::percent) +
+    labs(x = "Año", y = "Porcentaje", fill = "Categoría", title = titulo) +
+    theme(legend.position = "bottom")
+}
+
+# --- 7) Helpers de correlación ---
+# Recodifica binarios (1=Sí -> 1; 2=No -> 0); excluye 0 (blanco) colocándolo como NA
+to_binary <- function(x) {
+  x <- suppressWarnings(as.numeric(x))
+  x[x == 0] <- NA
+  x <- ifelse(x == 1, 1, ifelse(x == 2, 0, NA))
+  x
+}
+
+# Construye dataset numérico limpio para correlación
+build_corr_df <- function(df){
+  tibble::tibble(
+    p4   = suppressWarnings(as.numeric(df$p4)),
+    p26  = suppressWarnings(as.numeric(df$p26)),
+    edad = suppressWarnings(as.numeric(df$edad)),
+    p24_ord = {x <- suppressWarnings(as.numeric(df$p24)); x[!(x %in% 1:5)] <- NA; x},
+    p2_bin  = to_binary(df$p2),
+    p8_1_bin= to_binary(df$p8_1),
+    p8_2_bin= to_binary(df$p8_2),
+    nivel_ord = {z <- suppressWarnings(as.numeric(df$nivel)); z[!(z %in% 1:7)] <- NA; z}
+  )
+}
+
+corr_matrix <- function(df_num){
+  # Devuelve matriz de correlaciones de Pearson
+  cor(df_num, use = "pairwise.complete.obs")
+}
+```
+
+# 1) Cuantitativas (idéntico a antes)
+```{r p4-describe}
+knitr::kable(num_describe(dfs, "p4", anios), caption = "Resumen descriptivo por año — p4")
+```
+```{r p26-describe}
+knitr::kable(num_describe(dfs, "p26", anios), caption = "Resumen descriptivo por año — p26")
+```
+```{r edad-describe}
+knitr::kable(num_describe(dfs, "edad", anios), caption = "Resumen descriptivo por año — edad")
+```
+
+# 2) Cualitativas (SIN 'blanco')
+
+## 2.1 p2 — ¿Acostumbra leer? (solo 1=Sí, 2=No)
+```{r p2-prop-noblanco}
+N_p2_nb <- prop_mat_anios(dfs, "p2", levels=c(1,2), labels=c("Sí","No"), anios=anios)
+knitr::kable(round(N_p2_nb,3), caption="Proporciones por año — p2 (sin blancos)")
+line_prop_by_cat(N_p2_nb, cats_to_plot=c("Sí","No"))
+```
+```{r p2-barras-noblanco, fig.width=8, fig.height=5}
+freq_p2_nb <- freq_long_by_year(dfs, "p2", levels = c(1,2), labels = c("Sí","No"), anios)
+plot_barras_agrupadas(freq_p2_nb, usar_prop = TRUE, titulo = "p2 — barras agrupadas (sin blancos)")
+plot_barras_100(freq_p2_nb, titulo = "p2 — 100% apiladas (sin blancos)")
+```
+
+## 2.2 p24 — Frecuencia web/foros/blogs (1–5; sin 0)
+```{r p24-prop-noblanco}
+N_p24_nb <- prop_mat_anios(dfs, "p24", levels=1:5, labels=c("1","2","3","4","5"), anios=anios)
+knitr::kable(round(N_p24_nb,3), caption="Proporciones por año — p24 (1–5, sin blancos)")
+medianas_p24 <- ordinal_median_by_year(dfs, "p24", anios, valid_levels = 1:5)
+knitr::kable(t(as.data.frame(medianas_p24)), caption="Mediana anual — p24 (sin blancos)")
+```
+```{r p24-barras-noblanco, fig.width=8, fig.height=5}
+freq_p24_nb <- freq_long_by_year(dfs, "p24", levels = 1:5, labels = c("1","2","3","4","5"), anios)
+plot_barras_agrupadas(freq_p24_nb, usar_prop = TRUE, titulo = "p24 — barras agrupadas (sin blancos)")
+plot_barras_100(freq_p24_nb, titulo = "p24 — 100% apiladas (sin blancos)")
+```
+
+## 2.3 p8_1 — Libro digital (solo 1=Sí, 2=No)
+```{r p8_1-prop-noblanco}
+N_p8_1_nb <- prop_mat_anios(dfs, "p8_1", levels=c(1,2), labels=c("Sí","No"), anios=anios)
+knitr::kable(round(N_p8_1_nb,3), caption="Proporciones por año — p8_1 (sin blancos)")
+```
+```{r p8_1-barras-noblanco, fig.width=8, fig.height=5}
+freq_p8_1_nb <- freq_long_by_year(dfs, "p8_1", levels = c(1,2), labels = c("Sí","No"), anios)
+plot_barras_agrupadas(freq_p8_1_nb, usar_prop = TRUE, titulo = "p8_1 — barras agrupadas (sin blancos)")
+```
+
+## 2.4 p8_2 — Libro impreso (solo 1=Sí, 2=No)
+```{r p8_2-prop-noblanco}
+N_p8_2_nb <- prop_mat_anios(dfs, "p8_2", levels=c(1,2), labels=c("Sí","No"), anios=anios)
+knitr::kable(round(N_p8_2_nb,3), caption="Proporciones por año — p8_2 (sin blancos)")
+```
+```{r p8_2-barras-noblanco, fig.width=8, fig.height=5}
+freq_p8_2_nb <- freq_long_by_year(dfs, "p8_2", levels = c(1,2), labels = c("Sí","No"), anios)
+plot_barras_agrupadas(freq_p8_2_nb, usar_prop = TRUE, titulo = "p8_2 — barras agrupadas (sin blancos)")
+```
+
+## 2.5 Controles (sin blancos)
+```{r sexo-prop-noblanco}
+N_sexo_nb <- prop_mat_anios(dfs, "sexo", levels=c(1,2), labels=c("H","M"), anios=anios)
+knitr::kable(round(N_sexo_nb,3), caption="Proporciones por año — sexo (sin blancos)")
+```
+```{r nivel-prop-noblanco}
+# Ajusta niveles si tu diccionario difiere; aquí 1..7, excluye 0
+N_nivel_nb <- prop_mat_anios(dfs, "nivel", levels=1:7, labels=as.character(1:7), anios=anios)
+knitr::kable(round(N_nivel_nb,3), caption="Proporciones por año — nivel (1–7, sin blancos)")
+```
+
+# 3) Correlaciones (para preparar la futura regresión)
+
+A continuación calculamos **correlaciones de Pearson** usando:
+- Numéricas: `p4`, `p26`, `edad`.
+- Ordinales tratadas como numéricas: `p24` (1–5) y `nivel` (1–7), **sin blancos**.
+- Binarias recodificadas: `p2_bin`, `p8_1_bin`, `p8_2_bin` (1=Sí, 0=No), **sin blancos**.
+
+> Nota: La correlación de Pearson con binarias equivale a **punto-biserial**.
+
+```{r corr-overall}
+# Dataset combinado (todos los años apilados)
+df_all <- dplyr::bind_rows(lapply(dfs, build_corr_df))
+CM_all <- corr_matrix(df_all)
+knitr::kable(round(CM_all, 3), caption = "Matriz de correlaciones — TODOS LOS AÑOS (sin blancos)")
+```
+
+```{r corr-by-year}
+# Correlaciones por año
+corr_list <- lapply(dfs, function(d) corr_matrix(build_corr_df(d)))
+names(corr_list) <- anios
+# Imprime cada matriz
+for (yr in names(corr_list)){
+  cat("\n\n### Año", yr, "\n")
+  print(knitr::kable(round(corr_list[[yr]], 3),
+        caption = paste("Matriz de correlaciones —", yr)))
+}
+```
+
+```
+
+# Fin del documento
